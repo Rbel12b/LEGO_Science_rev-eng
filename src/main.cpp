@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <unordered_map>
 
 #include <NimBLEDevice.h>
 #include <Lpf2/config.hpp>
@@ -43,6 +44,18 @@ public:
 //     subscribed = subValue != 0;
 // }
 
+namespace std {
+    template<>
+    struct hash<NimBLEAddress> {
+        size_t operator()(const NimBLEAddress& addr) const {
+            return std::hash<std::string>()(addr.toString());
+        }
+    };
+}
+
+std::unordered_map<NimBLEAddress, const NimBLEAdvertisedDevice*> foundDevices;
+
+bool scanning = false;
 class AdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks
 {
 public:
@@ -60,25 +73,37 @@ public:
     void onResult(const NimBLEAdvertisedDevice *advertisedDevice) override
     {
         // Found a device, check if the service is contained and optional if address fits requested address
-        LPF2_LOG_D("advertised device: %s", advertisedDevice->toString().c_str());
+        // LPF2_LOG_D("advertised device: %s", advertisedDevice->toString().c_str());
 
-        if (advertisedDevice->haveServiceUUID() && advertisedDevice->getServiceUUID().equals(NimBLEUUID(SERVICE_UUID)))
-        {
-            advertisedDevice->getScan()->stop();
+        // if (advertisedDevice->haveServiceUUID() && advertisedDevice->getServiceUUID().equals(NimBLEUUID(SERVICE_UUID)))
+        // {
+        //     advertisedDevice->getScan()->stop();
 
-            if (advertisedDevice->haveManufacturerData())
-            {
-                LPF2_LOG_D("advertisement payload: %s", Lpf2::Utils::bytes_to_hexString(advertisedDevice->getPayload()).c_str());
-                LPF2_LOG_D("manufacturer data: %s", Lpf2::Utils::bytes_to_hexString(advertisedDevice->getManufacturerData()).c_str());
-                bleServerAddress = BLEAddress(advertisedDevice->getAddress());
-                connecting = true;
-            }
-        }
+        //     if (advertisedDevice->haveManufacturerData())
+        //     {
+        //         LPF2_LOG_D("advertisement payload: %s", Lpf2::Utils::bytes_to_hexString(advertisedDevice->getPayload()).c_str());
+        //         LPF2_LOG_D("manufacturer data: %s", Lpf2::Utils::bytes_to_hexString(advertisedDevice->getManufacturerData()).c_str());
+        //         bleServerAddress = BLEAddress(advertisedDevice->getAddress());
+        //         connecting = true;
+        //         scanning = false;
+        //     }
+        // }
+
+        auto addr = advertisedDevice->getAddress();
+        foundDevices[addr] = advertisedDevice;
     }
 };
 
 bool connect();
 void scan();
+
+std::vector<uint8_t> manufacturerData = {0x02, 0x01, 0x06, 0x0f, 0x16, 0x02, 0xfd};
+
+uint8_t devType = 0x03, color = 0x07, val1 = 0x03, val2 = 0x00;
+uint16_t cardNum = 0x08BC;
+uint32_t timer = 0;
+
+NimBLEAdvertising *bleAdvertising;
 
 void setup()
 {
@@ -108,7 +133,7 @@ void setup()
 
     LPF2_LOG_D("Service start");
 
-    auto bleAdvertising = NimBLEDevice::getAdvertising();
+    bleAdvertising = NimBLEDevice::getAdvertising();
 
     bleAdvertising->enableScanResponse(true);
 
@@ -117,23 +142,13 @@ void setup()
 
     // Raw advertisement payload
     std::vector<uint8_t> advPayload = {
-        0x02, 0x01, 0x06,
-        0x02, 0x0a, 0x00,
-        0x03, 0x03, 0x02, 0xfd,
-        0x07, 0xff, 0x97, 0x03, 0x02, 0x01, 0x06
+        devType, color, 0x00, (uint8_t)(cardNum & 0xFF), (uint8_t)((cardNum >> 8) & 0xFF), val1, val2, 0x00, 0x7e, (uint8_t)timer, (uint8_t)(timer >> 8), (uint8_t)(timer >> 16)
     };
 
+    advPayload.insert(advPayload.begin(), manufacturerData.begin(), manufacturerData.end());
+
     // Raw scan response payload
-    std::vector<uint8_t> scanRespPayload = {
-        0x17, 0x09,
-        0xf0, 0x9f, 0x9f, 0xa9, // UTF-8 emoji
-        0x20,                   // space
-        0x32, 0x32, 0x33, 0x36, // "2236"
-        0x20,
-        0x44, 0x6f, 0x75, 0x62, 0x6c, 0x65,
-        0x20,
-        0x4d, 0x6f, 0x74, 0x6f, 0x72 // "Double Motor"
-    };
+    std::vector<uint8_t> scanRespPayload = {};
 
     // Assign raw data
     advertisementData.addData(advPayload);
@@ -152,7 +167,7 @@ void setup()
 
 void loop()
 {
-    vTaskDelay(1);
+    vTaskDelay(50);
 
     if (Serial.available()) {
         uint8_t c = Serial.read();
@@ -167,11 +182,46 @@ void loop()
         connect();
     }
 
-    if (!connecting && !connected)
+    if (!connecting && !connected && !scanning)
     {
         scan();
-        vTaskDelay(500);
+        scanning = true;
     }
+
+    std::string device_addrs;
+    for (const auto &[addr, device] : foundDevices)
+    {
+        device_addrs += device->getAddress().toString() + " ";
+    }
+    Serial.print("\033[2J");
+    Serial.print("\033[H");
+    Serial.printf(LPF2_LOG_COLOR(LPF2_LOG_COLOR_MAGENTA) "Devices: %s" LPF2_LOG_RESET_COLOR "\n", device_addrs.c_str());
+    for (const auto &[addr, device] : foundDevices)
+    {
+        auto payload = device->getPayload();
+        if (payload.size() < manufacturerData.size() || !std::equal(manufacturerData.begin(), manufacturerData.end(), payload.begin()))
+        {
+            continue;
+        }
+        LPF2_LOG_D("device: %s, advertisement data: %s", device->getAddress().toString().c_str(), Lpf2::Utils::bytes_to_hexString(device->getPayload()).c_str());
+    }
+
+    // Raw advertisement payload
+    std::vector<uint8_t> advPayload = {
+        devType, color, 0x00, (uint8_t)(cardNum & 0xFF), (uint8_t)((cardNum >> 8) & 0xFF), val1, val2, 0x00, 0x7e, (uint8_t)timer, (uint8_t)(timer >> 8), (uint8_t)(timer >> 16)
+    };
+
+    advPayload.insert(advPayload.begin(), manufacturerData.begin(), manufacturerData.end());
+
+    // Raw scan response payload
+    std::vector<uint8_t> scanRespPayload = {};
+
+    // Assign raw data
+    auto advertisementData = NimBLEAdvertisementData();
+    advertisementData.addData(advPayload);
+    bleAdvertising->setAdvertisementData(advertisementData);
+
+    timer = millis();
 }
 
 void notifyCallback(
@@ -289,7 +339,7 @@ void scan()
         return;
     }
 
-    bleScan->setScanCallbacks(bleAdvertiseDeviceCallback);
+    bleScan->setScanCallbacks(bleAdvertiseDeviceCallback, true);
 
     bleScan->setActiveScan(true);
     bleScan->start(0);
