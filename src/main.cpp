@@ -23,7 +23,7 @@ public:
     void onWrite(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) override
     {
         std::vector<uint8_t> data(pCharacteristic->getValue());
-        LPF2_LOG_I("APP -> DEVICE: %s", Lpf2::Utils::bytes_to_hexString(data));
+        LPF2_LOG_I("APP -> DEVICE: %s", Lpf2::Utils::bytes_to_hexString(data).c_str());
         if (bleWriteCharacteristic)
         {
             bleWriteCharacteristic->writeValue(data);
@@ -111,8 +111,6 @@ void setup()
     auto bleAdvertising = NimBLEDevice::getAdvertising();
 
     bleAdvertising->enableScanResponse(true);
-    bleAdvertising->setMinInterval(32); // 0.625ms units -> 20ms
-    bleAdvertising->setMaxInterval(64); // 0.625ms units -> 40ms
 
     auto advertisementData = NimBLEAdvertisementData();
     auto scanResponseData = NimBLEAdvertisementData();
@@ -122,7 +120,7 @@ void setup()
         0x02, 0x01, 0x06,
         0x02, 0x0a, 0x00,
         0x03, 0x03, 0x02, 0xfd,
-        0x08, 0xff, 0x97, 0x03, 0x02, 0x01, 0x06, 0xbc
+        0x07, 0xff, 0x97, 0x03, 0x02, 0x01, 0x06
     };
 
     // Raw scan response payload
