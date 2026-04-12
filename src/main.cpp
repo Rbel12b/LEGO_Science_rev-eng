@@ -3,7 +3,9 @@
 
 #include <NimBLEDevice.h>
 #include <Lpf2/config.hpp>
-#include <Lpf2//Util/Values.hpp>
+#include <Lpf2/Util/Values.hpp>
+
+#include <SerialRenderer.hpp>
 
 #define SERVICE_UUID "0000fd02-0000-1000-8000-00805f9b34fb"
 #define WRITE_CHARACHTERISTIC_UUID "0000fd02-0001-1000-8000-00805f9b34fb"
@@ -15,6 +17,8 @@ bool connected = false;
 NimBLEAddress bleServerAddress;
 NimBLERemoteCharacteristic *bleWriteCharacteristic = nullptr;
 NimBLECharacteristic *bleReadCharacteristic = nullptr;
+
+SerialRenderer renderer(Serial);
 
 class WriteCharacteristicCallbacks : public NimBLECharacteristicCallbacks
 {
@@ -96,6 +100,7 @@ public:
 
 bool connect();
 void scan();
+void renderDevices();
 
 std::vector<uint8_t> manufacturerData = {0x02, 0x01, 0x06, 0x0f, 0x16, 0x02, 0xfd};
 
@@ -163,11 +168,14 @@ void setup()
     LPF2_LOG_D("Start advertising");
     NimBLEDevice::startAdvertising();
     LPF2_LOG_D("Characteristic defined! Now you can connect with your PoweredUp App!");
+
+    Serial.print("\033[2J");
+    Serial.print("\033[H");
 }
 
 void loop()
 {
-    vTaskDelay(50);
+    // vTaskDelay(1);
 
     if (Serial.available()) {
         uint8_t c = Serial.read();
@@ -188,30 +196,15 @@ void loop()
         scanning = true;
     }
 
-    std::string device_addrs;
-    for (const auto &[addr, device] : foundDevices)
-    {
-        device_addrs += device->getAddress().toString() + " ";
-    }
-    Serial.print("\033[2J");
-    Serial.print("\033[H");
-    Serial.printf(LPF2_LOG_COLOR(LPF2_LOG_COLOR_MAGENTA) "Devices: %s" LPF2_LOG_RESET_COLOR "\n", device_addrs.c_str());
-    for (const auto &[addr, device] : foundDevices)
-    {
-        auto payload = device->getPayload();
-        if (payload.size() < manufacturerData.size() || !std::equal(manufacturerData.begin(), manufacturerData.end(), payload.begin()))
-        {
-            continue;
-        }
-        LPF2_LOG_D("device: %s, advertisement data: %s", device->getAddress().toString().c_str(), Lpf2::Utils::bytes_to_hexString(device->getPayload()).c_str());
-    }
+    renderDevices();
 
     // Raw advertisement payload
     std::vector<uint8_t> advPayload = {
-        devType, color, 0x00, (uint8_t)(cardNum & 0xFF), (uint8_t)((cardNum >> 8) & 0xFF), val1, val2, 0x00, 0x7e, (uint8_t)timer, (uint8_t)(timer >> 8), (uint8_t)(timer >> 16)
+        // devType, color, 0x00, (uint8_t)(cardNum & 0xFF), (uint8_t)((cardNum >> 8) & 0xFF), val1, val2, 0x00, 0x7e, (uint8_t)timer, (uint8_t)(timer >> 8), (uint8_t)(timer >> 16)
+        0x02, 0x01, 0x06, 0x0f, 0x16, 0x02, 0xfd, 0x03, 0x06, 0x00, 0xbc, 0x08, 0x03, 0x0d, 0x00, 0x83, 0x60, 0x60, 0x02
     };
 
-    advPayload.insert(advPayload.begin(), manufacturerData.begin(), manufacturerData.end());
+    // advPayload.insert(advPayload.begin(), manufacturerData.begin(), manufacturerData.end());
 
     // Raw scan response payload
     std::vector<uint8_t> scanRespPayload = {};
@@ -222,6 +215,44 @@ void loop()
     bleAdvertising->setAdvertisementData(advertisementData);
 
     timer = millis();
+}
+
+void renderDevices()
+{
+    std::vector<std::string> lines;
+
+    std::string device_addrs;
+    for (const auto &[addr, device] : foundDevices)
+    {
+        device_addrs += device->getAddress().toString() + " ";
+    }
+
+    lines.push_back(
+        std::string(LPF2_LOG_COLOR(LPF2_LOG_COLOR_MAGENTA)) +
+        "Devices: " + device_addrs +
+        LPF2_LOG_RESET_COLOR
+    );
+
+    for (const auto &[addr, device] : foundDevices)
+    {
+        auto &payload = device->getPayload();
+
+        if (payload.size() < manufacturerData.size() ||
+            !std::equal(manufacturerData.begin(), manufacturerData.end(), payload.begin()))
+        {
+            continue;
+        }
+
+        lines.push_back(
+            std::string(LPF2_LOG_COLOR(LPF2_LOG_COLOR_MAGENTA)) +
+            "device: " + device->getAddress().toString() +
+            ", advertisement data: " +
+            Lpf2::Utils::bytes_to_hexString(payload) +
+            LPF2_LOG_RESET_COLOR
+        );
+    }
+
+    renderer.textBlock(lines);
 }
 
 void notifyCallback(
